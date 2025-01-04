@@ -23,13 +23,15 @@ bool ph_initialized = false;
 
 extern osMutexId ph_send_lockHandle;
 
-UART_HandleTypeDef *uart_device;
+extern UART_HandleTypeDef *huart1;
+
+//UART_HandleTypeDef uart_device;
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
 	ph_receive_intr(*ph_receive_it_buf);
 
-	HAL_UART_Receive_IT(huart, ph_receive_it_buf, 1);
+	HAL_UART_Receive_IT(&huart, ph_receive_it_buf, 1);
 }
 
 bool ph_init(UART_HandleTypeDef *device)
@@ -42,9 +44,9 @@ bool ph_init(UART_HandleTypeDef *device)
   init_char_queue(&ph_receive_queue, ph_receive_queue_buf, PH_BUF_LEN);
   init_fifo(&ph_receive_fifo, ph_receive_fifo_buf, PH_BUF_LEN);
 
-  uart_device = device;
+  //uart_device = device;
 
-  HAL_UART_Receive_IT(uart_device, ph_receive_it_buf, 1);
+  HAL_UART_Receive_IT(&huart1, ph_receive_it_buf, 1);
 
   ph_initialized = true;
   return true;
@@ -94,7 +96,7 @@ void ph_send_intr()
   char c;
   SIMCOM_LENGTH_TYPE count = 0;
 
-  while(uart_device->gState != HAL_UART_STATE_READY && uart_device->RxState != HAL_UART_STATE_BUSY_RX) {
+  while(huart1->gState != HAL_UART_STATE_READY && huart1->RxState != HAL_UART_STATE_BUSY_RX) {
 	  osDelay(1);
   }
 
@@ -106,7 +108,7 @@ void ph_send_intr()
     count++;
   }														//add another one and for the actual data
 //////////////////////////////////////////////////
-  HAL_UART_Transmit_DMA(uart_device, ph_send_dma_buf, count);
+  HAL_UART_Transmit_DMA(&huart1, ph_send_dma_buf, count);
   osMutexRelease(ph_send_lockHandle);
   osThreadYield();
 }

@@ -70,13 +70,11 @@ extern UART_HandleTypeDef *uart_device;
 
 /* Private variables ---------------------------------------------------------*/
 
-COM_InitTypeDef BspCOMInit;
-
 TIM_HandleTypeDef htim1;
 
 UART_HandleTypeDef huart1;
-DMA_HandleTypeDef hdma_usart1_tx;
 DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -123,14 +121,15 @@ char rxBuffer[256];        // Buffer for receiving AT responses
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
-static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM1_Init(void);
 void StartDefaultTask(void *argument);
 void StartSendTask(void *argument);
 void StartReceiveTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+void NetworkInit();
+void OpenSocket();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -197,8 +196,8 @@ Error_Handler();
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_TIM1_Init();
   MX_USART1_UART_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   // Initialize SIM7600
   NetworkInit();
@@ -262,17 +261,6 @@ Error_Handler();
   /* Initialize USER push-button, will be used to trigger an interrupt each time it's pressed.*/
   BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI);
 
-  /* Initialize COM1 port (115200, 8 bits (7-bit data + 1 stop bit), no parity */
-  BspCOMInit.BaudRate   = 115200;
-  BspCOMInit.WordLength = COM_WORDLENGTH_8B;
-  BspCOMInit.StopBits   = COM_STOPBITS_1;
-  BspCOMInit.Parity     = COM_PARITY_NONE;
-  BspCOMInit.HwFlowCtl  = COM_HWCONTROL_NONE;
-  if (BSP_COM_Init(COM1, &BspCOMInit) != BSP_ERROR_NONE)
-  {
-    Error_Handler();
-  }
-
   /* Start scheduler */
   osKernelStart();
 
@@ -309,11 +297,6 @@ void SystemClock_Config(void)
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
-  __HAL_RCC_SYSCFG_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
-
-  while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
-
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
@@ -323,7 +306,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 60;
+  RCC_OscInitStruct.PLL.PLLN = 50;
   RCC_OscInitStruct.PLL.PLLP = 2;
   RCC_OscInitStruct.PLL.PLLQ = 5;
   RCC_OscInitStruct.PLL.PLLR = 2;
@@ -348,7 +331,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
   RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -375,7 +358,7 @@ static void MX_TIM1_Init(void)
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
-  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
   htim1.Init.Period = 65535;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
@@ -513,8 +496,9 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pins : PC1 PC4 PC5 */
@@ -540,6 +524,14 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   GPIO_InitStruct.Alternate = GPIO_AF11_ETH;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PD8 PD9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PA8 PA11 PA12 */
   GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_11|GPIO_PIN_12;
@@ -570,8 +562,8 @@ void NetworkInit() {
 	memset(txBuffer, '\0' , sizeof(txBuffer));
 
 	memset(rxBuffer, '\0' , sizeof(rxBuffer));
-	//HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-	HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+	HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+	//HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 
     // Check SIM is ready
     strcpy(txBuffer, "AT+CPIN?\r\n");
@@ -579,8 +571,8 @@ void NetworkInit() {
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    //HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 
     // Check network registration
     strcpy(txBuffer, "AT+CREG?\r\n");
@@ -588,8 +580,8 @@ void NetworkInit() {
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    //HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 
     // Set APN
     strcpy(txBuffer, "AT+CGDCONT=1,\"IP\",\"airtelgprs.com\"\r\n");
@@ -597,8 +589,8 @@ void NetworkInit() {
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    //HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 
     // Start TCP/IP service
     strcpy(txBuffer, "AT+NETOPEN\r\n");
@@ -606,8 +598,8 @@ void NetworkInit() {
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    //HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 
     // Check response
     if (strstr(rxBuffer, "+NETOPEN: 0") == NULL) {
@@ -621,8 +613,8 @@ void OpenSocket() {
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    //HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 
 
     //memset(txBuffer, '\0' , sizeof(txBuffer));
@@ -691,7 +683,8 @@ void StartReceiveTask(void *argument)
 	  		  sl_receive_intr();
 	  		  	  	  	  	  	  	  	  	  	  	  	  ////add the DMA receive and check if rxBuffer has some data in it or not
 	  	  } else {
-	  		  HAL_UART_Receive_IT(uart_device, ph_receive_it_buf, 1);
+	  		  //HAL_UART_Receive_IT(uart_device, ph_receive_it_buf, 1);
+	  		  HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 	  		  osDelay(1);
 	  	  }
 ////////////////////////////////////////////////////////////////
