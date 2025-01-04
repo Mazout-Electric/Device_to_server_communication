@@ -1,1 +1,1 @@
-# Source_code
+# Device to server communication
