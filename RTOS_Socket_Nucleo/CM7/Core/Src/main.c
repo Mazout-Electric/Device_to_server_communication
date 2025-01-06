@@ -671,16 +671,14 @@ void SocketSendData(void) {
 	//encodeServerData(CURRENT, data);
 	int dataLength = encodeServerData(CURRENT, data);//;strlen((char *)data);
 
-    sprintf(txBuffer, "AT+CIPSEND=%d,%d\r\n", SOCKET_INDEX, dataLength);
+	osMutexAcquire(uart_lockHandle, osWaitForever);
 
-    osMutexAcquire(uart_lockHandle, osWaitForever);
+	sprintf(txBuffer, "AT+CIPSEND=%d,%d\r\n", SOCKET_INDEX, dataLength);
 
     HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     // Wait for `>` prompt
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
     while (!strstr((char *)&checkBuffer[readIndex], ">")) {
             osDelay(1);  // Wait for the response
         }
@@ -688,10 +686,6 @@ void SocketSendData(void) {
     // Send data
     HAL_UART_Transmit(&huart1, (uint8_t *)data, dataLength, UART_TIMEOUT);
     memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    // Confirm data sent
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
 
     osMutexRelease(uart_lockHandle);
 
@@ -703,9 +697,9 @@ void SocketSendData(void) {
 void SocketReceiveData(void) {
 	int length = sizeof(rxBuffer);
 
-    sprintf(txBuffer, "AT+CIPRXGET=2,%d,%d\r\n", SOCKET_INDEX, length);
+	osMutexAcquire(uart_lockHandle, osWaitForever);
 
-    osMutexAcquire(uart_lockHandle, osWaitForever);
+    sprintf(txBuffer, "AT+CIPRXGET=2,%d,%d\r\n", SOCKET_INDEX, length);
 
     HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
     memset(txBuffer, '\0' , sizeof(txBuffer));
