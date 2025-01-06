@@ -45,18 +45,13 @@
 #define HSEM_ID_0 (0U) /* HW semaphore 0*/
 #endif
 
+#define RX_BUFFER_SIZE 256
 #define UART_TIMEOUT 100
+#define PACKET_MIN_LENGTH 6
 #define SERVER_IP "13.233.25.158"
 #define SERVER_PORT 3000
 #define SOCKET_INDEX 0
-#define immobolize_t 0x01
-#define rpm_preset_t 0x02
-#define gps_t	0x03
-#define current_t 0x04
-#define voltage_t 0x05
-#define rpm_t 0x06
-#define temprature_t 0x07
-#define network_strength_t 0x08
+
 
 extern char ph_receive_it_buf[];
 
@@ -112,9 +107,42 @@ osMutexId_t ph_send_lockHandle;
 const osMutexAttr_t ph_send_lock_attributes = {
   .name = "ph_send_lock"
 };
+/* Definitions for uart_lock */
+osMutexId_t uart_lockHandle;
+const osMutexAttr_t uart_lock_attributes = {
+  .name = "uart_lock"
+};
 /* USER CODE BEGIN PV */
-char txBuffer[256];        // Buffer for sending AT commands
-char rxBuffer[256];        // Buffer for receiving AT responses
+char txBuffer[RX_BUFFER_SIZE];        // Buffer for sending AT commands
+char rxBuffer[RX_BUFFER_SIZE];        // Buffer for receiving AT responses
+char checkBuffer[RX_BUFFER_SIZE];
+
+uint8_t writeIndex = 0;  // Updated by DMA
+uint8_t readIndex = 0;   // Updated by application
+
+typedef struct {
+    uint8_t immobilizeStatus[1]; // 1 byte
+    uint8_t rpmPreset[1];        // 1 byte
+    uint8_t gpsData[6];          // 6 bytes
+    uint8_t currentData[2];      // 2 bytes
+    uint8_t voltageData[2];      // 2 bytes
+    uint8_t rpm[1];              // 1 byte
+    uint8_t temperature[1];      // 1 byte
+    uint8_t networkStrength[1];  // 1 byte
+} serverProperties;
+
+typedef enum {
+    IMMOBILIZE_STATUS = 0x01,
+    RPM_PRESET        = 0x02,
+    GPS               = 0x03,
+    CURRENT           = 0x04,
+    VOLTAGE           = 0x05,
+    RPM               = 0x06,
+    TEMPERATURE       = 0x07,
+    NETWORK_STRENGTH  = 0x08
+} ServerPropertyType;
+
+serverProperties serverAttributes;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -130,6 +158,11 @@ void StartReceiveTask(void *argument);
 /* USER CODE BEGIN PFP */
 void NetworkInit();
 void OpenSocket();
+void SocketSendData(void);
+void SocketReceiveData(void);
+void HandleReceivedData(uint8_t writeIndex);
+uint8_t encodeServerData(ServerPropertyType type, uint8_t *packet);
+void decodeServerData(uint8_t *packet, uint8_t length);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -218,6 +251,9 @@ Error_Handler();
 
   /* creation of ph_send_lock */
   ph_send_lockHandle = osMutexNew(&ph_send_lock_attributes);
+
+  /* creation of uart_lock */
+  uart_lockHandle = osMutexNew(&uart_lock_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -622,7 +658,210 @@ void OpenSocket() {
     if (strstr(rxBuffer, "+CIPOPEN: 0,0") == NULL) {
         //Error_Handler();
     }
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, (uint8_t *)rxBuffer, RX_BUFFER_SIZE);
 
+    // Enable UART IDLE line detection interrupt
+    //__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);
+}
+
+
+void SocketSendData(void) {
+	uint8_t data[20];
+	//serverAttributes.rpm[1] = data;
+	//encodeServerData(CURRENT, data);
+	int dataLength = encodeServerData(CURRENT, data);//;strlen((char *)data);
+
+    sprintf(txBuffer, "AT+CIPSEND=%d,%d\r\n", SOCKET_INDEX, dataLength);
+
+    osMutexAcquire(uart_lockHandle, osWaitForever);
+
+    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
+    memset(txBuffer, '\0' , sizeof(txBuffer));
+
+    // Wait for `>` prompt
+    memset(rxBuffer, '\0' , sizeof(rxBuffer));
+    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+    while (!strstr((char *)&checkBuffer[readIndex], ">")) {
+            osDelay(1);  // Wait for the response
+        }
+
+    // Send data
+    HAL_UART_Transmit(&huart1, (uint8_t *)data, dataLength, UART_TIMEOUT);
+    memset(txBuffer, '\0' , sizeof(txBuffer));
+
+    // Confirm data sent
+    memset(rxBuffer, '\0' , sizeof(rxBuffer));
+    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+
+    osMutexRelease(uart_lockHandle);
+
+    if (strstr(rxBuffer, "SEND OK") == NULL) {
+        //Error_Handler();
+    }
+}
+
+void SocketReceiveData(void) {
+	int length = sizeof(rxBuffer);
+
+    sprintf(txBuffer, "AT+CIPRXGET=2,%d,%d\r\n", SOCKET_INDEX, length);
+
+    osMutexAcquire(uart_lockHandle, osWaitForever);
+
+    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
+    memset(txBuffer, '\0' , sizeof(txBuffer));
+
+    osMutexRelease(uart_lockHandle);
+
+    // Check if data received successfully
+    if (strstr(rxBuffer, "+CIPRXGET:") == NULL) {
+        //Error_Handler();
+    }
+}
+
+void HandleReceivedData(uint8_t writeIndex) {
+
+	uint16_t newDataCount = (writeIndex >= readIndex)
+	                            ? (writeIndex - readIndex)
+	                            : (RX_BUFFER_SIZE - readIndex + writeIndex);
+	memset(checkBuffer, '\0', RX_BUFFER_SIZE);
+	for (uint16_t i = 0; i < newDataCount; i++) {
+		// Copy new data to the process buffer
+		uint8_t newByte = rxBuffer[readIndex];
+		checkBuffer[i] = newByte;
+
+		// Increment read index circularly
+		readIndex = (readIndex + 1) % RX_BUFFER_SIZE;
+	}
+	// Check if we have a complete packet
+	if (readIndex >= PACKET_MIN_LENGTH) { // Assume minimum length is 2 bytes (Type + Length)
+		if (checkBuffer[0] == 0xAA) {
+			decodeServerData((uint8_t *)checkBuffer, readIndex);
+		}
+	}
+}
+
+
+uint8_t encodeServerData(ServerPropertyType type, uint8_t *packet) {
+    uint8_t payloadLength = 0;
+    uint8_t *payload;
+
+    switch (type) {
+        case IMMOBILIZE_STATUS:
+            payload = serverAttributes.immobilizeStatus;
+            payloadLength = sizeof(serverAttributes.immobilizeStatus);
+            break;
+        case RPM_PRESET:
+            payload = serverAttributes.rpmPreset;
+            payloadLength = sizeof(serverAttributes.rpmPreset);
+            break;
+        case GPS:
+            payload = serverAttributes.gpsData;
+            payloadLength = sizeof(serverAttributes.gpsData);
+            break;
+        case CURRENT:
+            payload = serverAttributes.currentData;
+            payloadLength = sizeof(serverAttributes.currentData);
+            break;
+        case VOLTAGE:
+            payload = serverAttributes.voltageData;
+            payloadLength = sizeof(serverAttributes.voltageData);
+            break;
+        case RPM:
+            payload = serverAttributes.rpm;
+            payloadLength = sizeof(serverAttributes.rpm);
+            break;
+        case TEMPERATURE:
+            payload = serverAttributes.temperature;
+            payloadLength = sizeof(serverAttributes.temperature);
+            break;
+        case NETWORK_STRENGTH:
+            payload = serverAttributes.networkStrength;
+            payloadLength = sizeof(serverAttributes.networkStrength);
+            break;
+        default:
+            return 0; // Unknown type
+    }
+
+    // Create the packet
+    uint8_t index = 0;
+    packet[index++] = 0xAA;  // Header byte 1
+    packet[index++] = 0xBB;  // Header byte 2
+    packet[index++] = type;  // Property type
+    packet[index++] = payloadLength; // Payload length
+
+    // Copy payload
+    memcpy(&packet[index], payload, payloadLength);
+    index += payloadLength;
+
+    // Add checksum
+    uint8_t checksum = 0;
+    for (uint8_t i = 2; i < index; i++) {
+        checksum ^= packet[i];
+    }
+    packet[index++] = checksum;
+
+    return index; // Total packet length
+}
+
+void decodeServerData(uint8_t *packet, uint8_t length) {
+    if (length < 5) return; // Invalid packet length
+
+    // Validate header
+    if (packet[0] != 0xAA || packet[1] != 0xBB) return;
+
+    // Extract type and payload length
+    ServerPropertyType type = packet[2];
+    uint8_t payloadLength = packet[3];
+
+    // Validate checksum
+    uint8_t checksum = 0;
+    for (uint8_t i = 2; i < 4 + payloadLength; i++) {
+        checksum ^= packet[i];
+    }
+    if (checksum != packet[4 + payloadLength]) return;
+
+    // Extract payload
+    uint8_t *payload = &packet[4];
+
+    // Update serverAttributes
+    switch (type) {
+        case IMMOBILIZE_STATUS:
+            memcpy(serverAttributes.immobilizeStatus, payload, payloadLength);
+            break;
+        case RPM_PRESET:
+            memcpy(serverAttributes.rpmPreset, payload, payloadLength);
+            break;
+        case GPS:
+            memcpy(serverAttributes.gpsData, payload, payloadLength);
+            break;
+        case CURRENT:
+            memcpy(serverAttributes.currentData, payload, payloadLength);
+            break;
+        case VOLTAGE:
+            memcpy(serverAttributes.voltageData, payload, payloadLength);
+            break;
+        case RPM:
+            memcpy(serverAttributes.rpm, payload, payloadLength);
+            break;
+        case TEMPERATURE:
+            memcpy(serverAttributes.temperature, payload, payloadLength);
+            break;
+        case NETWORK_STRENGTH:
+            memcpy(serverAttributes.networkStrength, payload, payloadLength);
+            break;
+        default:
+            // Unknown type
+            break;
+    }
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+    //if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE)) {
+      //  __HAL_UART_CLEAR_IDLEFLAG(&huart1);  // Clear the idle flag
+
+	// Process received data
+	writeIndex = Size;//(RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(huart->hdmarx));// % RX_BUFFER_SIZE;
+	HandleReceivedData(writeIndex);
 }
 
 /* USER CODE END 4 */
@@ -658,7 +897,7 @@ void StartSendTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-	  ph_send_intr();
+	  SocketSendData();
   }
   /* USER CODE END StartSendTask */
 }
@@ -676,18 +915,7 @@ void StartReceiveTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-	  char c;
-/////////////////////////////////////////////////////////////////
-	  	  if(out_fifo(&ph_receive_fifo, &c)) {
-	  		  in_char_queue(&ph_receive_queue, c);
-	  		  sl_receive_intr();
-	  		  	  	  	  	  	  	  	  	  	  	  	  ////add the DMA receive and check if rxBuffer has some data in it or not
-	  	  } else {
-	  		  //HAL_UART_Receive_IT(uart_device, ph_receive_it_buf, 1);
-	  		  HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-	  		  osDelay(1);
-	  	  }
-////////////////////////////////////////////////////////////////
+	  SocketReceiveData();
   }
   /* USER CODE END StartReceiveTask */
 }
