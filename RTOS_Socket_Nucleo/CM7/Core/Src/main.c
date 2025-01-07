@@ -117,19 +117,9 @@ char txBuffer[RX_BUFFER_SIZE];        // Buffer for sending AT commands
 char rxBuffer[RX_BUFFER_SIZE];        // Buffer for receiving AT responses
 char checkBuffer[RX_BUFFER_SIZE];
 
-uint8_t writeIndex = 0;  // Updated by DMA
-uint8_t readIndex = 0;   // Updated by application
-
-typedef struct {
-    uint8_t immobilizeStatus[1]; // 1 byte
-    uint8_t rpmPreset[1];        // 1 byte
-    uint8_t gpsData[6];          // 6 bytes
-    uint8_t currentData[2];      // 2 bytes
-    uint8_t voltageData[2];      // 2 bytes
-    uint8_t rpm[1];              // 1 byte
-    uint8_t temperature[1];      // 1 byte
-    uint8_t networkStrength[1];  // 1 byte
-} serverProperties;
+uint16_t writeIndex = 0;  // Updated by DMA
+uint16_t readIndex = 0;   // Updated by application
+uint8_t propertyIndex = 0;
 
 typedef enum {
     IMMOBILIZE_STATUS = 0x01,
@@ -141,6 +131,18 @@ typedef enum {
     TEMPERATURE       = 0x07,
     NETWORK_STRENGTH  = 0x08
 } ServerPropertyType;
+
+
+typedef struct {
+    uint8_t immobilizeStatus[1]; // 1 byte
+    uint8_t rpmPreset[1];        // 1 byte
+    uint8_t gpsData[6];          // 6 bytes
+    uint8_t currentData[2];      // 2 bytes
+    uint8_t voltageData[2];      // 2 bytes
+    uint8_t rpm[1];              // 1 byte
+    uint8_t temperature[1];      // 1 byte
+    uint8_t networkStrength[1];  // 1 byte
+} serverProperties;
 
 serverProperties serverAttributes;
 /* USER CODE END PV */
@@ -237,6 +239,17 @@ Error_Handler();
 
   // Open a socket
   OpenSocket();
+
+  serverAttributes.immobilizeStatus[0] = 0x01;
+  serverAttributes.rpmPreset[0] = 0x64;
+  memset(serverAttributes.gpsData, 0x00, sizeof(serverAttributes.gpsData));
+  serverAttributes.currentData[0] = 0x12;
+  serverAttributes.currentData[1] = 0x34;
+  serverAttributes.voltageData[0] = 0x56;
+  serverAttributes.voltageData[1] = 0x78;
+  serverAttributes.rpm[0] = 0x32;
+  serverAttributes.temperature[0] = 0x20;
+  serverAttributes.networkStrength[0] = 0x05;
 
   /* USER CODE END 2 */
 
@@ -651,6 +664,7 @@ void OpenSocket() {
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
     HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
     //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+    memset(rxBuffer, '\0' , sizeof(rxBuffer));
 
 
     //memset(txBuffer, '\0' , sizeof(txBuffer));
@@ -666,25 +680,24 @@ void OpenSocket() {
 
 
 void SocketSendData(void) {
-	uint8_t data[20];
-	//serverAttributes.rpm[1] = data;
-	//encodeServerData(CURRENT, data);
-	int dataLength = encodeServerData(CURRENT, data);//;strlen((char *)data);
+	uint8_t data[10];
+
+	encodeServerData(propertyIndex, data);
 
 	osMutexAcquire(uart_lockHandle, osWaitForever);
 
-	sprintf(txBuffer, "AT+CIPSEND=%d,%d\r\n", SOCKET_INDEX, dataLength);
-
-    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
+	sprintf(txBuffer, "AT+CIPSEND=%d,%d\r\n", SOCKET_INDEX, sizeof(data));
 
     // Wait for `>` prompt
-    while (!strstr((char *)&checkBuffer[readIndex], ">")) {
-            osDelay(1);  // Wait for the response
-        }
+    while (!strstr((char *)checkBuffer, ">")) {
+
+    	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
+    	osDelay(10);  // Wait for the response
+    }
+    memset(txBuffer, '\0' , sizeof(txBuffer));
 
     // Send data
-    HAL_UART_Transmit(&huart1, (uint8_t *)data, dataLength, UART_TIMEOUT);
+    HAL_UART_Transmit(&huart1, (uint8_t *)data, sizeof(data), UART_TIMEOUT);
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     osMutexRelease(uart_lockHandle);
@@ -692,6 +705,7 @@ void SocketSendData(void) {
     if (strstr(rxBuffer, "SEND OK") == NULL) {
         //Error_Handler();
     }
+    if(++propertyIndex > 8)	propertyIndex  = 0;
 }
 
 void SocketReceiveData(void) {
@@ -892,6 +906,7 @@ void StartSendTask(void *argument)
   for(;;)
   {
 	  SocketSendData();
+	  osDelay(100);
   }
   /* USER CODE END StartSendTask */
 }
@@ -910,6 +925,7 @@ void StartReceiveTask(void *argument)
   for(;;)
   {
 	  SocketReceiveData();
+	  osDelay(200);
   }
   /* USER CODE END StartReceiveTask */
 }
