@@ -92,6 +92,13 @@ const osThreadAttr_t receiveTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
+/* Definitions for gpsTask */
+osThreadId_t gpsTaskHandle;
+const osThreadAttr_t gpsTask_attributes = {
+  .name = "gpsTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* Definitions for sl_send_lock */
 osMutexId_t sl_send_lockHandle;
 const osMutexAttr_t sl_send_lock_attributes = {
@@ -136,7 +143,7 @@ typedef enum {
 typedef struct {
     uint8_t immobilizeStatus[1]; // 1 byte
     uint8_t rpmPreset[1];        // 1 byte
-    uint8_t gpsData[6];          // 6 bytes
+    uint8_t gpsData[32];          // 6 bytes
     uint8_t currentData[2];      // 2 bytes
     uint8_t voltageData[2];      // 2 bytes
     uint8_t rpm[1];              // 1 byte
@@ -156,6 +163,7 @@ static void MX_TIM1_Init(void);
 void StartDefaultTask(void *argument);
 void StartSendTask(void *argument);
 void StartReceiveTask(void *argument);
+void StartGpsTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 void NetworkInit();
@@ -165,6 +173,7 @@ void SocketReceiveData(void);
 void HandleReceivedData(uint8_t writeIndex);
 uint8_t encodeServerData(ServerPropertyType type, uint8_t *packet);
 void decodeServerData(uint8_t *packet, uint8_t length);
+void gps(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -293,6 +302,9 @@ Error_Handler();
 
   /* creation of receiveTask */
   receiveTaskHandle = osThreadNew(StartReceiveTask, NULL, &receiveTask_attributes);
+
+  /* creation of gpsTask */
+  gpsTaskHandle = osThreadNew(StartGpsTask, NULL, &gpsTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -624,13 +636,21 @@ void NetworkInit() {
     //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
 
     // Check network registration
-    strcpy(txBuffer, "AT+CREG?\r\n");
+    strcpy(txBuffer, "AT+CREG=2\r\n");
     HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
     memset(txBuffer, '\0' , sizeof(txBuffer));
 
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
     HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
     //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+
+    // PDP Contextn
+	strcpy(txBuffer, "AT+CGACT=1,1\r\n");
+	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
+	memset(txBuffer, '\0' , sizeof(txBuffer));
+
+	memset(rxBuffer, '\0' , sizeof(rxBuffer));
+	HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
 
     // Set APN
     strcpy(txBuffer, "AT+CGDCONT=1,\"IP\",\"airtelgprs.com\"\r\n");
@@ -640,6 +660,16 @@ void NetworkInit() {
     memset(rxBuffer, '\0' , sizeof(rxBuffer));
     HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
     //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+
+    // Set GPS Mode
+	strcpy(txBuffer, "AT+CGPS=1\r\n");
+	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
+	memset(txBuffer, '\0' , sizeof(txBuffer));
+
+	memset(rxBuffer, '\0' , sizeof(rxBuffer));
+	HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
+	//HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
+
 
     // Start TCP/IP service
     strcpy(txBuffer, "AT+NETOPEN\r\n");
@@ -680,7 +710,7 @@ void OpenSocket() {
 
 
 void SocketSendData(void) {
-	uint8_t data[10];
+	uint8_t data[40];
 
 	encodeServerData(propertyIndex, data);
 
@@ -713,7 +743,7 @@ void SocketReceiveData(void) {
 
 	osMutexAcquire(uart_lockHandle, osWaitForever);
 
-    sprintf(txBuffer, "AT+CIPRXGET=2,%d,%d\r\n", SOCKET_INDEX, length);
+    sprintf(txBuffer, "AT+CIPRXGET=3,%d,%d\r\n", SOCKET_INDEX, length);
 
     HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
     memset(txBuffer, '\0' , sizeof(txBuffer));
@@ -724,6 +754,42 @@ void SocketReceiveData(void) {
     if (strstr(rxBuffer, "+CIPRXGET:") == NULL) {
         //Error_Handler();
     }
+}
+
+void gps(void) {
+	char *gpsString;
+	osMutexAcquire(uart_lockHandle, osWaitForever);
+
+	strcpy(txBuffer, "AT+CGPSINFO\r\n");
+
+	while (!strstr((char *)checkBuffer, "+CGPSINFO:")) {
+
+	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
+	osDelay(10);  // Wait for the response
+	}
+
+	gpsString = strstr((char *)checkBuffer, "+CGPSINFO:");
+
+	memset(txBuffer, '\0' , sizeof(txBuffer));
+
+	// Move pointer past "+CGPSINFO:"
+	gpsString += 10;
+
+	// Example response: 3113.343286,N,12121.234064,E,...
+	char latitude[16] = {0};
+	char longitude[16] = {0};
+
+	// Extract latitude and longitude strings
+	char *token = strtok(gpsString, ",");
+	if (token != NULL) strncpy(latitude, token, sizeof(latitude) - 1);
+	token = strtok(NULL, ","); // Skip N/S indicator
+	token = strtok(NULL, ",");
+	if (token != NULL) strncpy(longitude, token, sizeof(longitude) - 1);
+
+	// Format and store in gpsData
+	sprintf((char *)serverAttributes.gpsData, "%s,%s", latitude, longitude);
+
+	osMutexRelease(uart_lockHandle);
 }
 
 void HandleReceivedData(uint8_t writeIndex) {
@@ -822,11 +888,11 @@ void decodeServerData(uint8_t *packet, uint8_t length) {
     uint8_t payloadLength = packet[3];
 
     // Validate checksum
-    uint8_t checksum = 0;
-    for (uint8_t i = 2; i < 4 + payloadLength; i++) {
-        checksum ^= packet[i];
-    }
-    if (checksum != packet[4 + payloadLength]) return;
+   // uint8_t checksum = 0;
+   // for (uint8_t i = 2; i < 4 + payloadLength; i++) {
+   //     checksum ^= packet[i];
+   // }
+   // if (checksum != packet[4 + payloadLength]) return;
 
     // Extract payload
     uint8_t *payload = &packet[4];
@@ -906,7 +972,7 @@ void StartSendTask(void *argument)
   for(;;)
   {
 	  SocketSendData();
-	  osDelay(100);
+	  osDelay(20);
   }
   /* USER CODE END StartSendTask */
 }
@@ -925,9 +991,28 @@ void StartReceiveTask(void *argument)
   for(;;)
   {
 	  SocketReceiveData();
-	  osDelay(200);
+	  osDelay(20);
   }
   /* USER CODE END StartReceiveTask */
+}
+
+/* USER CODE BEGIN Header_StartGpsTask */
+/**
+* @brief Function implementing the gpsTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartGpsTask */
+void StartGpsTask(void *argument)
+{
+  /* USER CODE BEGIN StartGpsTask */
+  /* Infinite loop */
+  for(;;)
+  {
+	gps();
+    osDelay(20);
+  }
+  /* USER CODE END StartGpsTask */
 }
 
 /**
