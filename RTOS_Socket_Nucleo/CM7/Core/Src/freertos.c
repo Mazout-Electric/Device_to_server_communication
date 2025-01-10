@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -24,12 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <string.h>
 
-#include "FIFO.h"
-#include "PhysicalLayer.h"
-#include "ServiceLayer.h"
-#include "SimCom.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,13 +49,11 @@
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+
 /* USER CODE END FunctionPrototypes */
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-
-
-
 
 /* USER CODE END Application */
 

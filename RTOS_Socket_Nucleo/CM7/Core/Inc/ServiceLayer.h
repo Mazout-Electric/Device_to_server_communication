@@ -1,29 +1,48 @@
 /*
  * ServiceLayer.h
  *
- *  Created on: Dec 13, 2024
+ *  Created on: Jan 9, 2025
  *      Author: pirda
  */
 
 #ifndef INC_SERVICELAYER_H_
 #define INC_SERVICELAYER_H_
 
-#include <stdbool.h>
-
-#include "SimCom.h"
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include "stm32h7xx_hal.h"
+#include "stm32h7xx_nucleo.h"
+#include "stm32h7xx_hal.h"
 
-#define SL_CALLBACK_NUM 10
-#define SL_BUF_LEN 200
+#include "Packet.h"
+#include "AT_command.h"
 
-bool sl_init(UART_HandleTypeDef *device);
-bool sl_config(char port, void (*callback)(char, char, const char*, SIMCOM_LENGTH_TYPE));
-bool sl_send(char from_port, char to_port, const char *data, SIMCOM_LENGTH_TYPE length);
+typedef struct {
+    uint8_t immobilizeStatus[1]; // 1 byte
+    uint8_t rpmPreset[1];        // 1 byte
+    uint8_t gpsData[32];          // 6 bytes
+    uint8_t currentData[2];      // 2 bytes
+    uint8_t voltageData[2];      // 2 bytes
+    uint8_t rpm[1];              // 1 byte
+    uint8_t temperature[1];      // 1 byte
+    uint8_t networkStrength[1];  // 1 byte
+} serverProperties;
 
-/*
-  call it timely for your own project
-*/
-bool sl_receive_intr();
+typedef enum {
+    IMMOBILIZE_STATUS = 0x01,
+    RPM_PRESET        = 0x02,
+    GPS               = 0x03,
+    CURRENT           = 0x04,
+    VOLTAGE           = 0x05,
+    RPM               = 0x06,
+    TEMPERATURE       = 0x07,
+    NETWORK_STRENGTH  = 0x08
+} ServerPropertyType;
+
+void HandleReceivedData(uint8_t writeIndexS);
+uint8_t encodeServerData(ServerPropertyType type, uint8_t *packet);
+void decodeServerData(uint8_t *packet, uint8_t length);
 
 #endif /* INC_SERVICELAYER_H_ */

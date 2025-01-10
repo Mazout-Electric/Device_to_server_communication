@@ -23,14 +23,11 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
-#include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-#include "FIFO.h"
-#include "PhysicalLayer.h"
-#include "ServiceLayer.h"
-#include "SimCom.h"
+#include "Task.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,17 +42,7 @@
 #define HSEM_ID_0 (0U) /* HW semaphore 0*/
 #endif
 
-#define RX_BUFFER_SIZE 256
-#define UART_TIMEOUT 100
-#define PACKET_MIN_LENGTH 6
-#define SERVER_IP "13.233.25.158"
-#define SERVER_PORT 3000
-#define SOCKET_INDEX 0
 
-
-extern char ph_receive_it_buf[];
-
-extern UART_HandleTypeDef *uart_device;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -66,10 +53,10 @@ extern UART_HandleTypeDef *uart_device;
 /* Private variables ---------------------------------------------------------*/
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_rx;
-DMA_HandleTypeDef hdma_usart1_tx;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -99,47 +86,15 @@ const osThreadAttr_t gpsTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for sl_send_lock */
-osMutexId_t sl_send_lockHandle;
-const osMutexAttr_t sl_send_lock_attributes = {
-  .name = "sl_send_lock"
-};
-/* Definitions for dl_send_lock */
-osMutexId_t dl_send_lockHandle;
-const osMutexAttr_t dl_send_lock_attributes = {
-  .name = "dl_send_lock"
-};
-/* Definitions for ph_send_lock */
-osMutexId_t ph_send_lockHandle;
-const osMutexAttr_t ph_send_lock_attributes = {
-  .name = "ph_send_lock"
-};
 /* Definitions for uart_lock */
 osMutexId_t uart_lockHandle;
 const osMutexAttr_t uart_lock_attributes = {
   .name = "uart_lock"
 };
 /* USER CODE BEGIN PV */
-char txBuffer[RX_BUFFER_SIZE];        // Buffer for sending AT commands
-char rxBuffer[RX_BUFFER_SIZE];        // Buffer for receiving AT responses
-char checkBuffer[RX_BUFFER_SIZE];
-
-uint16_t writeIndex = 0;  // Updated by DMA
-uint16_t readIndex = 0;   // Updated by application
-uint8_t propertyIndex = 0;
-
-typedef enum {
-    IMMOBILIZE_STATUS = 0x01,
-    RPM_PRESET        = 0x02,
-    GPS               = 0x03,
-    CURRENT           = 0x04,
-    VOLTAGE           = 0x05,
-    RPM               = 0x06,
-    TEMPERATURE       = 0x07,
-    NETWORK_STRENGTH  = 0x08
-} ServerPropertyType;
 
 
+/*
 typedef struct {
     uint8_t immobilizeStatus[1]; // 1 byte
     uint8_t rpmPreset[1];        // 1 byte
@@ -149,9 +104,9 @@ typedef struct {
     uint8_t rpm[1];              // 1 byte
     uint8_t temperature[1];      // 1 byte
     uint8_t networkStrength[1];  // 1 byte
-} serverProperties;
+} serverProperties;*/
 
-serverProperties serverAttributes;
+extern serverProperties serverAttributes;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -160,20 +115,15 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_TIM4_Init(void);
 void StartDefaultTask(void *argument);
 void StartSendTask(void *argument);
 void StartReceiveTask(void *argument);
 void StartGpsTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-void NetworkInit();
-void OpenSocket();
-void SocketSendData(void);
-void SocketReceiveData(void);
-void HandleReceivedData(uint8_t writeIndex);
-uint8_t encodeServerData(ServerPropertyType type, uint8_t *packet);
-void decodeServerData(uint8_t *packet, uint8_t length);
-void gps(void);
+
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -242,6 +192,7 @@ Error_Handler();
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_TIM1_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   // Initialize SIM7600
   NetworkInit();
@@ -265,15 +216,6 @@ Error_Handler();
   /* Init scheduler */
   osKernelInitialize();
   /* Create the mutex(es) */
-  /* creation of sl_send_lock */
-  sl_send_lockHandle = osMutexNew(&sl_send_lock_attributes);
-
-  /* creation of dl_send_lock */
-  dl_send_lockHandle = osMutexNew(&dl_send_lock_attributes);
-
-  /* creation of ph_send_lock */
-  ph_send_lockHandle = osMutexNew(&ph_send_lock_attributes);
-
   /* creation of uart_lock */
   uart_lockHandle = osMutexNew(&uart_lock_attributes);
 
@@ -358,6 +300,11 @@ void SystemClock_Config(void)
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
+  __HAL_RCC_SYSCFG_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
+
+  while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
+
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
@@ -367,7 +314,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 50;
+  RCC_OscInitStruct.PLL.PLLN = 60;
   RCC_OscInitStruct.PLL.PLLP = 2;
   RCC_OscInitStruct.PLL.PLLQ = 5;
   RCC_OscInitStruct.PLL.PLLR = 2;
@@ -392,7 +339,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
   RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -410,6 +357,7 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
   TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
@@ -420,11 +368,24 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 30000-1;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -438,7 +399,7 @@ static void MX_TIM1_Init(void)
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_LOW;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
   sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
@@ -450,7 +411,8 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  if (HAL_TIM_OC_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -473,6 +435,64 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 2 */
   HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 200-1;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 10000-1;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim4, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
 
 }
 
@@ -537,9 +557,6 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
-  /* DMA1_Stream1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
 }
 
@@ -616,327 +633,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-void NetworkInit() {
 
-	strcpy(txBuffer, "ATE0\r\n");
-	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-	memset(txBuffer, '\0' , sizeof(txBuffer));
-
-	memset(rxBuffer, '\0' , sizeof(rxBuffer));
-	HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-	//HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-
-    // Check SIM is ready
-    strcpy(txBuffer, "AT+CPIN?\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-
-    // Check network registration
-    strcpy(txBuffer, "AT+CREG=2\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-
-    // PDP Contextn
-	strcpy(txBuffer, "AT+CGACT=1,1\r\n");
-	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-	memset(txBuffer, '\0' , sizeof(txBuffer));
-
-	memset(rxBuffer, '\0' , sizeof(rxBuffer));
-	HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-
-    // Set APN
-    strcpy(txBuffer, "AT+CGDCONT=1,\"IP\",\"airtelgprs.com\"\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-
-    // Set GPS Mode
-	strcpy(txBuffer, "AT+CGPS=1\r\n");
-	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-	memset(txBuffer, '\0' , sizeof(txBuffer));
-
-	memset(rxBuffer, '\0' , sizeof(rxBuffer));
-	HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-	//HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-
-
-    // Start TCP/IP service
-    strcpy(txBuffer, "AT+NETOPEN\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-
-    // Check response
-    if (strstr(rxBuffer, "+NETOPEN: 0") == NULL) {
-        //Error_Handler();
-    }
-}
-
-void OpenSocket() {
-    sprintf(txBuffer, "AT+CIPOPEN=%d,\"TCP\",\"%s\",%d\r\n", SOCKET_INDEX, SERVER_IP, SERVER_PORT);
-    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-    HAL_UART_Receive(&huart1, (uint8_t *)rxBuffer, sizeof(rxBuffer), UART_TIMEOUT);
-    //HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxBuffer, 256);
-    memset(rxBuffer, '\0' , sizeof(rxBuffer));
-
-
-    //memset(txBuffer, '\0' , sizeof(txBuffer));
-    // Check response
-    if (strstr(rxBuffer, "+CIPOPEN: 0,0") == NULL) {
-        //Error_Handler();
-    }
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, (uint8_t *)rxBuffer, RX_BUFFER_SIZE);
-
-    // Enable UART IDLE line detection interrupt
-    //__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);
-}
-
-
-void SocketSendData(void) {
-	uint8_t data[40];
-
-	encodeServerData(propertyIndex, data);
-
-	osMutexAcquire(uart_lockHandle, osWaitForever);
-
-	sprintf(txBuffer, "AT+CIPSEND=%d,%d\r\n", SOCKET_INDEX, sizeof(data));
-
-    // Wait for `>` prompt
-    while (!strstr((char *)checkBuffer, ">")) {
-
-    	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    	osDelay(10);  // Wait for the response
-    }
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    // Send data
-    HAL_UART_Transmit(&huart1, (uint8_t *)data, sizeof(data), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    osMutexRelease(uart_lockHandle);
-
-    if (strstr(rxBuffer, "SEND OK") == NULL) {
-        //Error_Handler();
-    }
-    if(++propertyIndex > 8)	propertyIndex  = 0;
-}
-
-void SocketReceiveData(void) {
-	int length = sizeof(rxBuffer);
-
-	osMutexAcquire(uart_lockHandle, osWaitForever);
-
-    sprintf(txBuffer, "AT+CIPRXGET=3,%d,%d\r\n", SOCKET_INDEX, length);
-
-    HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-    memset(txBuffer, '\0' , sizeof(txBuffer));
-
-    osMutexRelease(uart_lockHandle);
-
-    // Check if data received successfully
-    if (strstr(rxBuffer, "+CIPRXGET:") == NULL) {
-        //Error_Handler();
-    }
-}
-
-void gps(void) {
-	char *gpsString;
-	osMutexAcquire(uart_lockHandle, osWaitForever);
-
-	strcpy(txBuffer, "AT+CGPSINFO\r\n");
-
-	while (!strstr((char *)checkBuffer, "+CGPSINFO:")) {
-
-	HAL_UART_Transmit(&huart1, (uint8_t *)txBuffer, strlen(txBuffer), UART_TIMEOUT);
-	osDelay(10);  // Wait for the response
-	}
-
-	gpsString = strstr((char *)checkBuffer, "+CGPSINFO:");
-
-	memset(txBuffer, '\0' , sizeof(txBuffer));
-
-	// Move pointer past "+CGPSINFO:"
-	gpsString += 10;
-
-	// Example response: 3113.343286,N,12121.234064,E,...
-	char latitude[16] = {0};
-	char longitude[16] = {0};
-
-	// Extract latitude and longitude strings
-	char *token = strtok(gpsString, ",");
-	if (token != NULL) strncpy(latitude, token, sizeof(latitude) - 1);
-	token = strtok(NULL, ","); // Skip N/S indicator
-	token = strtok(NULL, ",");
-	if (token != NULL) strncpy(longitude, token, sizeof(longitude) - 1);
-
-	// Format and store in gpsData
-	sprintf((char *)serverAttributes.gpsData, "%s,%s", latitude, longitude);
-
-	osMutexRelease(uart_lockHandle);
-}
-
-void HandleReceivedData(uint8_t writeIndex) {
-
-	uint16_t newDataCount = (writeIndex >= readIndex)
-	                            ? (writeIndex - readIndex)
-	                            : (RX_BUFFER_SIZE - readIndex + writeIndex);
-	memset(checkBuffer, '\0', RX_BUFFER_SIZE);
-	for (uint16_t i = 0; i < newDataCount; i++) {
-		// Copy new data to the process buffer
-		uint8_t newByte = rxBuffer[readIndex];
-		checkBuffer[i] = newByte;
-
-		// Increment read index circularly
-		readIndex = (readIndex + 1) % RX_BUFFER_SIZE;
-	}
-	// Check if we have a complete packet
-	if (readIndex >= PACKET_MIN_LENGTH) { // Assume minimum length is 2 bytes (Type + Length)
-		if (checkBuffer[0] == 0xAA) {
-			decodeServerData((uint8_t *)checkBuffer, readIndex);
-		}
-	}
-}
-
-
-uint8_t encodeServerData(ServerPropertyType type, uint8_t *packet) {
-    uint8_t payloadLength = 0;
-    uint8_t *payload;
-
-    switch (type) {
-        case IMMOBILIZE_STATUS:
-            payload = serverAttributes.immobilizeStatus;
-            payloadLength = sizeof(serverAttributes.immobilizeStatus);
-            break;
-        case RPM_PRESET:
-            payload = serverAttributes.rpmPreset;
-            payloadLength = sizeof(serverAttributes.rpmPreset);
-            break;
-        case GPS:
-            payload = serverAttributes.gpsData;
-            payloadLength = sizeof(serverAttributes.gpsData);
-            break;
-        case CURRENT:
-            payload = serverAttributes.currentData;
-            payloadLength = sizeof(serverAttributes.currentData);
-            break;
-        case VOLTAGE:
-            payload = serverAttributes.voltageData;
-            payloadLength = sizeof(serverAttributes.voltageData);
-            break;
-        case RPM:
-            payload = serverAttributes.rpm;
-            payloadLength = sizeof(serverAttributes.rpm);
-            break;
-        case TEMPERATURE:
-            payload = serverAttributes.temperature;
-            payloadLength = sizeof(serverAttributes.temperature);
-            break;
-        case NETWORK_STRENGTH:
-            payload = serverAttributes.networkStrength;
-            payloadLength = sizeof(serverAttributes.networkStrength);
-            break;
-        default:
-            return 0; // Unknown type
-    }
-
-    // Create the packet
-    uint8_t index = 0;
-    packet[index++] = 0xAA;  // Header byte 1
-    packet[index++] = 0xBB;  // Header byte 2
-    packet[index++] = type;  // Property type
-    packet[index++] = payloadLength; // Payload length
-
-    // Copy payload
-    memcpy(&packet[index], payload, payloadLength);
-    index += payloadLength;
-
-    // Add checksum
-    uint8_t checksum = 0;
-    for (uint8_t i = 2; i < index; i++) {
-        checksum ^= packet[i];
-    }
-    packet[index++] = checksum;
-
-    return index; // Total packet length
-}
-
-void decodeServerData(uint8_t *packet, uint8_t length) {
-    if (length < 5) return; // Invalid packet length
-
-    // Validate header
-    if (packet[0] != 0xAA || packet[1] != 0xBB) return;
-
-    // Extract type and payload length
-    ServerPropertyType type = packet[2];
-    uint8_t payloadLength = packet[3];
-
-    // Validate checksum
-   // uint8_t checksum = 0;
-   // for (uint8_t i = 2; i < 4 + payloadLength; i++) {
-   //     checksum ^= packet[i];
-   // }
-   // if (checksum != packet[4 + payloadLength]) return;
-
-    // Extract payload
-    uint8_t *payload = &packet[4];
-
-    // Update serverAttributes
-    switch (type) {
-        case IMMOBILIZE_STATUS:
-            memcpy(serverAttributes.immobilizeStatus, payload, payloadLength);
-            break;
-        case RPM_PRESET:
-            memcpy(serverAttributes.rpmPreset, payload, payloadLength);
-            break;
-        case GPS:
-            memcpy(serverAttributes.gpsData, payload, payloadLength);
-            break;
-        case CURRENT:
-            memcpy(serverAttributes.currentData, payload, payloadLength);
-            break;
-        case VOLTAGE:
-            memcpy(serverAttributes.voltageData, payload, payloadLength);
-            break;
-        case RPM:
-            memcpy(serverAttributes.rpm, payload, payloadLength);
-            break;
-        case TEMPERATURE:
-            memcpy(serverAttributes.temperature, payload, payloadLength);
-            break;
-        case NETWORK_STRENGTH:
-            memcpy(serverAttributes.networkStrength, payload, payloadLength);
-            break;
-        default:
-            // Unknown type
-            break;
-    }
-}
-
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
-    //if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE)) {
-      //  __HAL_UART_CLEAR_IDLEFLAG(&huart1);  // Clear the idle flag
-
-	// Process received data
-	writeIndex = Size;//(RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(huart->hdmarx));// % RX_BUFFER_SIZE;
-	HandleReceivedData(writeIndex);
-}
 
 /* USER CODE END 4 */
 
@@ -958,62 +655,6 @@ void StartDefaultTask(void *argument)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartSendTask */
-/**
-* @brief Function implementing the sendTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartSendTask */
-void StartSendTask(void *argument)
-{
-  /* USER CODE BEGIN StartSendTask */
-  /* Infinite loop */
-  for(;;)
-  {
-	  SocketSendData();
-	  osDelay(20);
-  }
-  /* USER CODE END StartSendTask */
-}
-
-/* USER CODE BEGIN Header_StartReceiveTask */
-/**
-* @brief Function implementing the receiveTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartReceiveTask */
-void StartReceiveTask(void *argument)
-{
-  /* USER CODE BEGIN StartReceiveTask */
-  /* Infinite loop */
-  for(;;)
-  {
-	  SocketReceiveData();
-	  osDelay(20);
-  }
-  /* USER CODE END StartReceiveTask */
-}
-
-/* USER CODE BEGIN Header_StartGpsTask */
-/**
-* @brief Function implementing the gpsTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartGpsTask */
-void StartGpsTask(void *argument)
-{
-  /* USER CODE BEGIN StartGpsTask */
-  /* Infinite loop */
-  for(;;)
-  {
-	gps();
-    osDelay(20);
-  }
-  /* USER CODE END StartGpsTask */
-}
 
 /**
   * @brief  Period elapsed callback in non blocking mode
@@ -1023,19 +664,19 @@ void StartGpsTask(void *argument)
   * @param  htim : TIM handle
   * @retval None
   */
+/*
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  /* USER CODE BEGIN Callback 0 */
+  /* USER CODE BEGIN Callback 0
 
-  /* USER CODE END Callback 0 */
+  /* USER CODE END Callback 0
   if (htim->Instance == TIM6) {
     HAL_IncTick();
   }
-  /* USER CODE BEGIN Callback 1 */
+  /* USER CODE BEGIN Callback 1
 
-  /* USER CODE END Callback 1 */
-}
-
+  /* USER CODE END Callback 1
+}*/
 /**
   * @brief  This function is executed in case of error occurrence.
   * @retval None
