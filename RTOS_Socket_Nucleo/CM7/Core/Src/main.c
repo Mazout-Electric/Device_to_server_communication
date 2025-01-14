@@ -27,10 +27,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#include "FIFO.h"
-#include "PhysicalLayer.h"
-#include "ServiceLayer.h"
-#include "SimCom.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,9 +49,6 @@
 #define SOCKET_INDEX 0
 
 
-extern char ph_receive_it_buf[];
-
-extern UART_HandleTypeDef *uart_device;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
